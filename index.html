@@ -183,26 +183,70 @@
     let kuroshiroInstance = null;
     let kuroshiroPromise = null;
 
+    // kuromoji의 dictPath를 프록시로 감싸서 dict 파일 URL을 올바르게 생성
+    const DICT_BASE = 'https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/dict/';
+    const DICT_FILES = [
+      'base.dat.gz','check.dat.gz','tid.dat.gz','tid_pos.dat.gz',
+      'tid_map.dat.gz','cc.dat.gz','unk.dat.gz','unk_pos.dat.gz',
+      'unk_map.dat.gz','unk_char.dat.gz','unk_compat.dat.gz',
+      'unk_invoke.dat.gz'
+    ];
+
+    // 사전 파일을 미리 fetch하여 캐시
+    const dictCache = {};
+    async function preloadDict() {
+      await Promise.all(DICT_FILES.map(async f => {
+        const res = await fetch(DICT_BASE + f);
+        dictCache[f] = await res.arrayBuffer();
+      }));
+    }
+
     async function initKuroshiro() {
       if (kuroshiroInstance) return kuroshiroInstance;
       if (kuroshiroPromise) return kuroshiroPromise;
       kuroshiroPromise = (async () => {
         const KuroshiroClass = Kuroshiro.default || Kuroshiro;
         const AnalyzerClass = KuromojiAnalyzer.default || KuromojiAnalyzer;
-        // kuromoji 번들의 path.join이 https:// → https:/ 로 깨뜨리는 버그 우회
-        // XHR.open을 패치하여 잘못된 URL을 복원
-        const origOpen = XMLHttpRequest.prototype.open;
-        XMLHttpRequest.prototype.open = function(method, url, ...args) {
-          if (typeof url === 'string' && url.includes('cdn.jsdelivr.net') && !url.startsWith('http')) {
-            url = 'https://cdn.jsdelivr.net' + url.substring(url.indexOf('/npm/'));
+
+        // 사전 파일 미리 로드
+        await preloadDict();
+
+        // XHR을 패치하여 dict 요청을 캐시에서 응답
+        const OrigXHR = XMLHttpRequest;
+        const origOpen = OrigXHR.prototype.open;
+        const origSend = OrigXHR.prototype.send;
+
+        OrigXHR.prototype.open = function(method, url, ...args) {
+          this._dictFile = null;
+          if (typeof url === 'string') {
+            for (const f of DICT_FILES) {
+              if (url.includes(f)) { this._dictFile = f; break; }
+            }
           }
-          return origOpen.call(this, method, url, ...args);
+          if (!this._dictFile) {
+            return origOpen.call(this, method, url, ...args);
+          }
         };
+
+        OrigXHR.prototype.send = function(...args) {
+          if (this._dictFile && dictCache[this._dictFile]) {
+            Object.defineProperty(this, 'status', { value: 200 });
+            Object.defineProperty(this, 'response', { value: dictCache[this._dictFile] });
+            if (this.onload) setTimeout(() => this.onload.call(this), 0);
+            return;
+          }
+          return origSend.call(this, ...args);
+        };
+
         const k = new KuroshiroClass();
         await k.init(new AnalyzerClass({
-          dictPath: 'https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/dict/'
+          dictPath: DICT_BASE
         }));
-        XMLHttpRequest.prototype.open = origOpen;
+
+        // 패치 복원
+        OrigXHR.prototype.open = origOpen;
+        OrigXHR.prototype.send = origSend;
+
         kuroshiroInstance = k;
         return k;
       })();
