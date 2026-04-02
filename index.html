@@ -189,10 +189,20 @@
       kuroshiroPromise = (async () => {
         const KuroshiroClass = Kuroshiro.default || Kuroshiro;
         const AnalyzerClass = KuromojiAnalyzer.default || KuromojiAnalyzer;
+        // kuromoji 번들의 path.join이 https:// → https:/ 로 깨뜨리는 버그 우회
+        // XHR.open을 패치하여 잘못된 URL을 복원
+        const origOpen = XMLHttpRequest.prototype.open;
+        XMLHttpRequest.prototype.open = function(method, url, ...args) {
+          if (typeof url === 'string' && url.includes('cdn.jsdelivr.net') && !url.startsWith('http')) {
+            url = 'https://cdn.jsdelivr.net' + url.substring(url.indexOf('/npm/'));
+          }
+          return origOpen.call(this, method, url, ...args);
+        };
         const k = new KuroshiroClass();
         await k.init(new AnalyzerClass({
           dictPath: 'https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/dict/'
         }));
+        XMLHttpRequest.prototype.open = origOpen;
         kuroshiroInstance = k;
         return k;
       })();
