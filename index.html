@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tango 単語 - 일본어 단어 암기</title>
+  <link rel="manifest" href="./manifest.json">
+  <meta name="theme-color" content="#4f46e5">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="apple-touch-icon" href="./icon-192.png">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/kuroshiro@1.2.0/dist/kuroshiro.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/kuroshiro-analyzer-kuromoji@1.1.0/dist/kuroshiro-analyzer-kuromoji.min.js"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['"Noto Sans KR"', '"Noto Sans JP"', 'sans-serif'],
+          },
+        },
+      },
+    };
+  </script>
+  <style>
+    ruby rt { font-size: 0.55em; color: #6b7280; }
+    .flip-card { perspective: 1000px; }
+    .flip-card-inner {
+      transition: transform 0.5s;
+      transform-style: preserve-3d;
+    }
+    .flip-card-inner.flipped { transform: rotateY(180deg); }
+    .flip-card-front, .flip-card-back { backface-visibility: hidden; }
+    .flip-card-back { transform: rotateY(180deg); }
+  </style>
+</head>
+<body class="h-screen flex font-sans antialiased bg-white text-gray-900">
+
+  <!-- Sidebar -->
+  <aside class="w-56 shrink-0 bg-gray-50 border-r border-gray-200 min-h-screen p-4">
+    <h1 class="text-xl font-bold mb-8 px-3">
+      <span lang="ja">単語</span>
+      <span class="text-sm font-normal text-gray-500 ml-2">Tango</span>
+    </h1>
+    <nav id="nav" class="space-y-1"></nav>
+  </aside>
+
+  <!-- Main -->
+  <main id="main" class="flex-1 overflow-y-auto p-8"></main>
+
+  <script>
+    // ── Supabase Config ──
+    const SUPABASE_URL = 'https://gudlfajkzbcwpycnjxyq.supabase.co';
+    const SUPABASE_KEY = 'sb_publishable_PRp-3A3gPZsENapnQqYJLg_OStynRMY';
+    const TABLE = 'words';
+
+    function supaFetch(path, options = {}) {
+      const url = `${SUPABASE_URL}/rest/v1/${path}`;
+      return fetch(url, {
+        ...options,
+        headers: {
+          'apikey': SUPABASE_KEY,
+          'Authorization': `Bearer ${SUPABASE_KEY}`,
+          'Content-Type': 'application/json',
+          'Prefer': options.prefer || '',
+          ...options.headers,
+        },
+      });
+    }
+
+    // ── Storage (Supabase) ──
+    // 로컬 캐시 — 네트워크 호출을 최소화
+    let _cache = null;
+
+    const store = {
+      async getAll() {
+        if (_cache) return _cache;
+        const res = await supaFetch(`${TABLE}?select=*&order=created_at.desc`);
+        const rows = await res.json();
+        // DB 컬럼(snake_case) → 앱 필드(camelCase) 변환
+        _cache = rows.map(r => ({
+          id: r.id,
+          japanese: r.japanese,
+          reading: r.reading,
+          furigana: r.furigana || [],
+          meaning: r.meaning,
+          knownCount: r.known_count,
+          unknownCount: r.unknown_count,
+          mastered: r.mastered,
+          lastStudiedAt: r.last_studied_at,
+          createdAt: r.created_at,
+        }));
+        return _cache;
+      },
+
+      async add(word) {
+        const body = {
+          id: word.id,
+          japanese: word.japanese,
+          reading: word.reading,
+          furigana: word.furigana,
+          meaning: word.meaning,
+          known_count: word.knownCount,
+          unknown_count: word.unknownCount,
+          mastered: word.mastered,
+          last_studied_at: word.lastStudiedAt,
+          created_at: word.createdAt,
+        };
+        await supaFetch(TABLE, {
+          method: 'POST',
+          prefer: 'return=minimal',
+          body: JSON.stringify(body),
+        });
+        _cache = null;
+      },
+
+      async update(id, updates) {
+        const body = {};
+        if ('knownCount' in updates) body.known_count = updates.knownCount;
+        if ('unknownCount' in updates) body.unknown_count = updates.unknownCount;
+        if ('mastered' in updates) body.mastered = updates.mastered;
+        if ('lastStudiedAt' in updates) body.last_studied_at = updates.lastStudiedAt;
+        if ('japanese' in updates) body.japanese = updates.japanese;
+        if ('reading' in updates) body.reading = updates.reading;
+        if ('furigana' in updates) body.furigana = updates.furigana;
+        if ('meaning' in updates) body.meaning = updates.meaning;
+        await supaFetch(`${TABLE}?id=eq.${id}`, {
+          method: 'PATCH',
+          prefer: 'return=minimal',
+          body: JSON.stringify(body),
+        });
+        _cache = null;
+      },
+
+      async remove(id) {
+        await supaFetch(`${TABLE}?id=eq.${id}`, { method: 'DELETE' });
+        _cache = null;
+      },
+
+      async getById(id) {
+        const all = await this.getAll();
+        return all.find(x => x.id === id);
+      },
+    };
+
+    // ── localStorage → Supabase 마이그레이션 ──
+    async function migrateLocalStorage() {
+      const raw = localStorage.getItem('tango-words');
+      if (!raw) return;
+      const words = JSON.parse(raw);
+      if (words.length === 0) return;
+      // Supabase에 이미 데이터가 있으면 스킵
+      const res = await supaFetch(`${TABLE}?select=id&limit=1`);
+      const existing = await res.json();
+      if (existing.length > 0) {
+        localStorage.removeItem('tango-words');
+        return;
+      }
+      const rows = words.map(w => ({
+        id: w.id,
+        japanese: w.japanese,
+        reading: w.reading,
+        furigana: w.furigana,
+        meaning: w.meaning,
+        known_count: w.knownCount || 0,
+        unknown_count: w.unknownCount || 0,
+        mastered: w.mastered || false,
+        last_studied_at: w.lastStudiedAt || null,
+        created_at: w.createdAt || Date.now(),
+      }));
+      await supaFetch(TABLE, {
+        method: 'POST',
+        prefer: 'return=minimal',
+        body: JSON.stringify(rows),
+      });
+      localStorage.removeItem('tango-words');
+      console.log(`✅ ${rows.length}개 단어를 Supabase로 마이그레이션 완료`);
+    }
+
+    // ── Kuroshiro ──
+    let kuroshiroInstance = null;
+    let kuroshiroPromise = null;
+
+    async function initKuroshiro() {
+      if (kuroshiroInstance) return kuroshiroInstance;
+      if (kuroshiroPromise) return kuroshiroPromise;
+      kuroshiroPromise = (async () => {
+        const k = new Kuroshiro();
+        await k.init(new KuromojiAnalyzer({
+          dictPath: 'https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/dict/'
+        }));
+        kuroshiroInstance = k;
+        return k;
+      })();
+      return kuroshiroPromise;
+    }
+
+    async function convertFurigana(text) {
+      const k = await initKuroshiro();
+      const [html, reading] = await Promise.all([
+        k.convert(text, { mode: 'furigana', to: 'hiragana' }),
+        k.convert(text, { mode: 'normal', to: 'hiragana' }),
+      ]);
+      return { html, reading, pairs: parseFuriganaHTML(html) };
+    }
+
+    function parseFuriganaHTML(html) {
+      const pairs = [];
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      doc.body.childNodes.forEach(node => {
+        if (node.nodeType === Node.TEXT_NODE) {
+          const t = node.textContent || '';
+          if (t) pairs.push({ text: t, reading: '' });
+        } else if (node.nodeName === 'RUBY') {
+          let base = '', rd = '';
+          node.childNodes.forEach(c => {
+            if (c.nodeType === Node.TEXT_NODE) base += c.textContent || '';
+            else if (c.nodeName === 'RT') rd = c.textContent || '';
+          });
+          if (base) pairs.push({ text: base, reading: rd });
+        }
+      });
+      return pairs;
+    }
+
+    function renderFurigana(pairs, cls = '') {
+      return `<span class="${cls}" lang="ja">${pairs.map(p =>
+        p.reading
+          ? `<ruby>${esc(p.text)}<rp>(</rp><rt>${esc(p.reading)}</rt><rp>)</rp></ruby>`
+          : esc(p.text)
+      ).join('')}</span>`;
+    }
+
+    function esc(s) {
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    // ── Router ──
+    const navItems = [
+      { hash: '#home', label: '홈', icon: '🏠' },
+      { hash: '#add', label: '단어 추가', icon: '➕' },
+      { hash: '#words', label: '단어장', icon: '📖' },
+      { hash: '#study', label: '학습', icon: '🎴' },
+    ];
+
+    function renderNav() {
+      const hash = location.hash || '#home';
+      document.getElementById('nav').innerHTML = navItems.map(item => {
+        const active = item.hash === '#home'
+          ? (hash === '#home' || hash === '' || hash === '#')
+          : hash.startsWith(item.hash);
+        return `<a href="${item.hash}" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+          active ? 'bg-indigo-50 text-indigo-700' : 'text-gray-700 hover:bg-gray-100'
+        }">${item.icon} ${item.label}</a>`;
+      }).join('');
+    }
+
+    function route() {
+      renderNav();
+      const hash = location.hash || '#home';
+      if (hash === '#home' || hash === '' || hash === '#') renderHome();
+      else if (hash === '#add') renderAdd();
+      else if (hash === '#words') renderWords();
+      else if (hash.startsWith('#edit/')) renderEdit(hash.replace('#edit/', ''));
+      else if (hash === '#study') renderStudy();
+    }
+
+    window.addEventListener('hashchange', route);
+
+    // ── Home ──
+    async function renderHome() {
+      const words = await store.getAll();
+      const today = new Date(); today.setHours(0,0,0,0);
+      const todayMs = today.getTime();
+      const studiedToday = words.filter(w => w.lastStudiedAt && w.lastStudiedAt >= todayMs).length;
+      const mastered = words.filter(w => w.mastered).length;
+      const weak = words.filter(w => !w.mastered && w.unknownCount > w.knownCount)
+        .sort((a,b) => b.unknownCount - a.unknownCount).slice(0, 5);
+
+      document.getElementById('main').innerHTML = `
+        <h1 class="text-2xl font-bold mb-8">대시보드</h1>
+        <div class="grid grid-cols-3 gap-4 mb-8">
+          <div class="p-5 bg-white border border-gray-200 rounded-xl">
+            <p class="text-3xl font-bold">${words.length}</p>
+            <p class="text-sm text-gray-500 mt-1">전체 단어</p>
+          </div>
+          <div class="p-5 bg-white border border-gray-200 rounded-xl">
+            <p class="text-3xl font-bold text-indigo-600">${studiedToday}</p>
+            <p class="text-sm text-gray-500 mt-1">오늘 학습</p>
+          </div>
+          <div class="p-5 bg-white border border-gray-200 rounded-xl">
+            <p class="text-3xl font-bold text-green-600">${mastered}</p>
+            <p class="text-sm text-gray-500 mt-1">마스터</p>
+          </div>
+        </div>
+        ${weak.length > 0 ? `
+          <div class="mb-8">
+            <h2 class="text-lg font-semibold mb-3">취약 단어</h2>
+            <div class="space-y-2">
+              ${weak.map(w => `
+                <div class="flex justify-between items-center p-3 bg-red-50 rounded-lg text-sm">
+                  <span lang="ja">${esc(w.japanese)}</span>
+                  <span class="text-gray-600">${esc(w.meaning)}</span>
+                  <span class="text-red-500">✗${w.unknownCount} / ✓${w.knownCount}</span>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        ` : ''}
+        <div class="flex gap-3">
+          <a href="#add" class="inline-flex items-center justify-center rounded-lg font-medium px-4 py-2 text-sm bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm">단어 추가</a>
+          <a href="#study" class="inline-flex items-center justify-center rounded-lg font-medium px-4 py-2 text-sm bg-white text-gray-700 border border-gray-300 hover:bg-gray-50 shadow-sm">학습 시작</a>
+        </div>
+      `;
+    }
+
+    // ── Add ──
+    function renderAdd() {
+      document.getElementById('main').innerHTML = `
+        <h1 class="text-2xl font-bold mb-6">단어 추가</h1>
+        <div id="add-msg"></div>
+        ${wordFormHTML()}
+      `;
+      initWordForm(null, async (data) => {
+        await store.add({
+          ...data,
+          id: crypto.randomUUID(),
+          createdAt: Date.now(),
+          lastStudiedAt: null,
+          knownCount: 0,
+          unknownCount: 0,
+          mastered: false,
+        });
+        document.getElementById('add-msg').innerHTML =
+          '<div class="mb-4 p-3 bg-green-50 text-green-700 rounded-lg text-sm">단어가 추가되었습니다!</div>';
+        setTimeout(() => {
+          document.getElementById('add-msg').innerHTML = '';
+        }, 2000);
+        // 폼 초기화
+        document.getElementById('wf-japanese').value = '';
+        document.getElementById('wf-reading').value = '';
+        document.getElementById('wf-meaning').value = '';
+        document.getElementById('wf-preview').innerHTML = '';
+        currentFurigana = [];
+      });
+
+      // 페이지 진입 시 사전 미리 로드
+      initKuroshiro().catch(() => {});
+    }
+
+    // ── Word Form (shared) ──
+    let currentFurigana = [];
+
+    function wordFormHTML(initial, submitLabel = '추가') {
+      return `
+        <form id="wf" class="space-y-5 max-w-md">
+          <div>
+            <label for="wf-japanese" class="block text-sm font-medium text-gray-700 mb-1">일본어</label>
+            <input id="wf-japanese" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              value="${initial ? esc(initial.japanese) : ''}" placeholder="例: 食べる" lang="ja" required>
+          </div>
+          <div>
+            <label for="wf-reading" class="block text-sm font-medium text-gray-700 mb-1">읽기 (히라가나)</label>
+            <input id="wf-reading" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              value="${initial ? esc(initial.reading) : ''}" placeholder="例: たべる" lang="ja">
+            <p id="wf-status" class="text-xs text-gray-400 mt-1 hidden">변환 중...</p>
+          </div>
+          <div id="wf-preview" class="p-3 bg-gray-50 rounded-lg ${initial && initial.furigana.length ? '' : 'hidden'}">
+            <p class="text-xs text-gray-500 mb-1">후리가나 미리보기</p>
+            <span id="wf-preview-text" class="text-2xl">${initial ? renderFurigana(initial.furigana) : ''}</span>
+          </div>
+          <div>
+            <label for="wf-meaning" class="block text-sm font-medium text-gray-700 mb-1">한국어 뜻</label>
+            <input id="wf-meaning" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              value="${initial ? esc(initial.meaning) : ''}" placeholder="例: 먹다" required>
+          </div>
+          <button type="submit" class="inline-flex items-center justify-center rounded-lg font-medium px-4 py-2 text-sm bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2">
+            ${submitLabel}
+          </button>
+        </form>
+      `;
+    }
+
+    function initWordForm(initial, onSubmit) {
+      currentFurigana = initial ? [...initial.furigana] : [];
+      const jpInput = document.getElementById('wf-japanese');
+
+      jpInput.addEventListener('blur', async () => {
+        const text = jpInput.value.trim();
+        if (!text) return;
+        const status = document.getElementById('wf-status');
+        status.classList.remove('hidden');
+        try {
+          const result = await convertFurigana(text);
+          document.getElementById('wf-reading').value = result.reading;
+          currentFurigana = result.pairs;
+          const preview = document.getElementById('wf-preview');
+          preview.classList.remove('hidden');
+          document.getElementById('wf-preview-text').innerHTML = renderFurigana(result.pairs, 'text-2xl');
+        } catch(e) { console.error(e); }
+        finally { status.classList.add('hidden'); }
+      });
+
+      document.getElementById('wf').addEventListener('submit', (e) => {
+        e.preventDefault();
+        const japanese = jpInput.value.trim();
+        const reading = document.getElementById('wf-reading').value.trim();
+        const meaning = document.getElementById('wf-meaning').value.trim();
+        if (!japanese || !meaning) return;
+        onSubmit({ japanese, reading, furigana: currentFurigana, meaning });
+      });
+    }
+
+    // ── Words List ──
+    async function renderWords() {
+      const words = await store.getAll();
+      document.getElementById('main').innerHTML = `
+        <div class="flex items-center justify-between mb-6">
+          <h1 class="text-2xl font-bold">단어장</h1>
+          <span class="text-sm text-gray-500">${words.length}개</span>
+        </div>
+        <input id="search" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 mb-4"
+          placeholder="검색 (일본어, 읽기, 한국어)">
+        <div id="word-list" class="space-y-2"></div>
+        <!-- Delete Modal -->
+        <dialog id="delete-modal" class="rounded-xl p-0 backdrop:bg-black/40 max-w-sm w-full">
+          <div class="p-6">
+            <h2 class="text-lg font-semibold mb-4">단어 삭제</h2>
+            <p class="text-sm text-gray-600 mb-4" id="delete-msg"></p>
+            <div class="flex gap-2 justify-end">
+              <button id="delete-cancel" class="inline-flex items-center justify-center rounded-lg font-medium px-4 py-2 text-sm bg-white text-gray-700 border border-gray-300 hover:bg-gray-50 shadow-sm">취소</button>
+              <button id="delete-confirm" class="inline-flex items-center justify-center rounded-lg font-medium px-4 py-2 text-sm bg-red-600 text-white hover:bg-red-700 shadow-sm">삭제</button>
+            </div>
+          </div>
+        </dialog>
+      `;
+
+      let deleteId = null;
+      const modal = document.getElementById('delete-modal');
+
+      function filterAndRender() {
+        const q = document.getElementById('search').value.toLowerCase();
+        const filtered = words.filter(w =>
+          w.japanese.includes(q) || w.reading.includes(q) || w.meaning.toLowerCase().includes(q)
+        );
+        document.getElementById('word-list').innerHTML = filtered.length === 0
+          ? `<p class="text-gray-400 text-sm py-8 text-center">${words.length === 0 ? '등록된 단어가 없습니다.' : '검색 결과가 없습니다.'}</p>`
+          : filtered.map(w => `
+            <div class="p-4 border rounded-lg transition-colors ${w.mastered ? 'bg-gray-50 border-gray-200 opacity-60' : 'bg-white border-gray-200'}">
+              <div class="flex items-start justify-between gap-4">
+                <div class="min-w-0">
+                  ${renderFurigana(w.furigana, 'text-xl')}
+                  <p class="text-gray-600 mt-1">${esc(w.meaning)}</p>
+                  ${w.mastered ? '<span class="inline-block mt-1 text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">마스터</span>' : ''}
+                </div>
+                <div class="flex gap-1 shrink-0">
+                  <button onclick="toggleMaster('${w.id}')" class="px-3 py-1.5 text-sm rounded-lg text-gray-600 hover:bg-gray-100">${w.mastered ? '해제' : '마스터'}</button>
+                  <button onclick="location.hash='#edit/${w.id}'" class="px-3 py-1.5 text-sm rounded-lg text-gray-600 hover:bg-gray-100">수정</button>
+                  <button onclick="confirmDelete('${w.id}','${esc(w.japanese)}')" class="px-3 py-1.5 text-sm rounded-lg text-red-600 hover:bg-red-50">삭제</button>
+                </div>
+              </div>
+            </div>
+          `).join('');
+      }
+
+      document.getElementById('search').addEventListener('input', filterAndRender);
+      filterAndRender();
+
+      window.confirmDelete = (id, name) => {
+        deleteId = id;
+        document.getElementById('delete-msg').textContent = `"${name}"을(를) 삭제하시겠습니까?`;
+        modal.showModal();
+      };
+      document.getElementById('delete-cancel').onclick = () => { modal.close(); };
+      document.getElementById('delete-confirm').onclick = async () => {
+        if (deleteId) { await store.remove(deleteId); modal.close(); renderWords(); }
+      };
+      modal.addEventListener('close', () => { deleteId = null; });
+    }
+
+    window.toggleMaster = async (id) => {
+      const w = await store.getById(id);
+      if (w) { await store.update(id, { mastered: !w.mastered }); renderWords(); }
+    };
+
+    // ── Edit ──
+    async function renderEdit(id) {
+      const word = await store.getById(id);
+      if (!word) { location.hash = '#words'; return; }
+      document.getElementById('main').innerHTML = `
+        <h1 class="text-2xl font-bold mb-6">단어 수정</h1>
+        ${wordFormHTML(word, '수정')}
+      `;
+      initWordForm(word, async (data) => {
+        await store.update(id, data);
+        location.hash = '#words';
+      });
+    }
+
+    // ── Study ──
+    async function renderStudy() {
+      const allWords = (await store.getAll()).filter(w => !w.mastered);
+      if (allWords.length === 0) {
+        document.getElementById('main').innerHTML = `
+          <div class="text-center py-20">
+            <p class="text-gray-400 mb-4">학습할 단어가 없습니다.</p>
+            <a href="#add" class="inline-flex items-center justify-center rounded-lg font-medium px-4 py-2 text-sm bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm">단어 추가하러 가기</a>
+          </div>
+        `;
+        return;
+      }
+
+      // 셔플
+      const deck = [...allWords].sort(() => Math.random() - 0.5);
+      let idx = 0, flipped = false;
+      let knownCount = 0, unknownCount = 0;
+
+      function renderCard() {
+        if (idx >= deck.length) {
+          // 완료
+          document.getElementById('main').innerHTML = `
+            <div class="text-center py-20">
+              <h2 class="text-2xl font-bold mb-4">학습 완료!</h2>
+              <div class="flex justify-center gap-8 mb-8">
+                <div><p class="text-3xl font-bold text-green-600">${knownCount}</p><p class="text-sm text-gray-500">알아 ✓</p></div>
+                <div><p class="text-3xl font-bold text-red-500">${unknownCount}</p><p class="text-sm text-gray-500">모름 ✗</p></div>
+              </div>
+              <button onclick="renderStudy()" class="inline-flex items-center justify-center rounded-lg font-medium px-6 py-3 text-base bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm">다시 학습</button>
+            </div>
+          `;
+          window.removeEventListener('keydown', handleKey);
+          return;
+        }
+
+        const w = deck[idx];
+        const pct = ((idx + 1) / deck.length * 100).toFixed(0);
+
+        document.getElementById('main').innerHTML = `
+          <h1 class="text-2xl font-bold mb-6">학습</h1>
+          <div class="w-full max-w-lg mx-auto mb-6">
+            <div class="flex justify-between text-sm text-gray-500 mb-1">
+              <span>${idx + 1} / ${deck.length}</span><span>${pct}%</span>
+            </div>
+            <div class="h-2 bg-gray-200 rounded-full overflow-hidden">
+              <div class="h-full bg-indigo-500 rounded-full transition-all duration-300" style="width:${pct}%"></div>
+            </div>
+          </div>
+          <div class="flip-card w-full max-w-lg mx-auto cursor-pointer" id="card">
+            <div class="flip-card-inner relative w-full h-64 ${flipped ? 'flipped' : ''}" id="card-inner">
+              <div class="flip-card-front absolute inset-0 flex items-center justify-center rounded-2xl bg-white border-2 border-gray-200 shadow-lg p-8">
+                <p class="text-3xl font-medium text-gray-800">${esc(w.meaning)}</p>
+              </div>
+              <div class="flip-card-back absolute inset-0 flex flex-col items-center justify-center rounded-2xl bg-indigo-50 border-2 border-indigo-200 shadow-lg p-8">
+                ${renderFurigana(w.furigana, 'text-4xl')}
+                <p class="text-lg text-gray-500 mt-4">${esc(w.meaning)}</p>
+              </div>
+            </div>
+          </div>
+          <div id="controls" class="flex justify-center mt-8">
+            ${flipped
+              ? `<button id="btn-unknown" class="inline-flex items-center justify-center rounded-lg font-medium px-6 py-3 text-base bg-red-600 text-white hover:bg-red-700 shadow-sm mr-4">모름 ✗ (←)</button>
+                 <button id="btn-known" class="inline-flex items-center justify-center rounded-lg font-medium px-6 py-3 text-base bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm">알아! ✓ (→)</button>`
+              : `<button id="btn-flip" class="inline-flex items-center justify-center rounded-lg font-medium px-6 py-3 text-base bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm">카드 뒤집기 (Space)</button>`
+            }
+          </div>
+        `;
+
+        if (!flipped) {
+          document.getElementById('card').onclick = doFlip;
+          document.getElementById('btn-flip').onclick = doFlip;
+        } else {
+          document.getElementById('btn-known').onclick = () => answer(true);
+          document.getElementById('btn-unknown').onclick = () => answer(false);
+        }
+      }
+
+      function doFlip() { flipped = true; renderCard(); }
+
+      async function answer(known) {
+        const w = deck[idx];
+        const now = Date.now();
+        if (known) {
+          knownCount++;
+          await store.update(w.id, { knownCount: w.knownCount + 1, lastStudiedAt: now });
+        } else {
+          unknownCount++;
+          await store.update(w.id, { unknownCount: w.unknownCount + 1, lastStudiedAt: now });
+        }
+        idx++;
+        flipped = false;
+        renderCard();
+      }
+
+      function handleKey(e) {
+        if (location.hash !== '#study') {
+          window.removeEventListener('keydown', handleKey);
+          return;
+        }
+        if (e.key === ' ' || e.code === 'Space') { e.preventDefault(); if (!flipped) doFlip(); }
+        else if (e.key === 'ArrowRight' && flipped) answer(true);
+        else if (e.key === 'ArrowLeft' && flipped) answer(false);
+      }
+
+      window.addEventListener('keydown', handleKey);
+      renderCard();
+    }
+    // renderStudy를 전역으로 노출 (다시 학습 버튼)
+    window.renderStudy = renderStudy;
+
+    // ── Service Worker ──
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('./sw.js').catch(() => {});
+    }
+
+    // ── Init ──
+    (async () => {
+      await migrateLocalStorage();
+      route();
+    })();
+  </script>
+</body>
+</html>
