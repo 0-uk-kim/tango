@@ -187,8 +187,10 @@
       if (kuroshiroInstance) return kuroshiroInstance;
       if (kuroshiroPromise) return kuroshiroPromise;
       kuroshiroPromise = (async () => {
-        const k = new Kuroshiro();
-        await k.init(new KuromojiAnalyzer({
+        const KuroshiroClass = Kuroshiro.default || Kuroshiro;
+        const AnalyzerClass = KuromojiAnalyzer.default || KuromojiAnalyzer;
+        const k = new KuroshiroClass();
+        await k.init(new AnalyzerClass({
           dictPath: 'https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/dict/'
         }));
         kuroshiroInstance = k;
