@@ -190,9 +190,36 @@
       });
       localStorage.removeItem('tango-words');
       console.log(`✅ ${rows.length}개 단어를 Supabase로 마이그레이션 완료`);
+    }    // ── Furigana Worker ──
+    const furiganaWorker = new Worker('./furigana-worker.js');
+    const workerCallbacks = {};
+    let workerMsgId = 0;
+    const dictBase = new URL('./', window.location.href).href;
+
+    furiganaWorker.onmessage = function(e) {
+      const { id, result, error } = e.data;
+      const cb = workerCallbacks[id];
+      if (cb) {
+        delete workerCallbacks[id];
+        if (error) cb.reject(new Error(error));
+        else cb.resolve(result);
+      }
+    };
+
+    function workerCall(type, text) {
+      return new Promise((resolve, reject) => {
+        const id = ++workerMsgId;
+        workerCallbacks[id] = { resolve, reject };
+        furiganaWorker.postMessage({ id, type, text, dictBase });
+      });
     }
 
+    function convertFurigana(text) {
+      return workerCall('convert', text);
+    }
 
+    // 백그라운드에서 사전 미리 로드
+    workerCall('init', '').catch(() => {});
 
     function renderFurigana(pairs, cls = '') {
       return `<span class="${cls}" lang="ja">${pairs.map(p =>
@@ -342,7 +369,7 @@
             <label for="wf-reading" class="block text-sm font-medium text-gray-700 mb-1">읽기 (히라가나)</label>
             <input id="wf-reading" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
               value="${initial ? esc(initial.reading) : ''}" placeholder="例: たべる" lang="ja">
-            <p class="text-xs text-gray-400 mt-1">일본어의 히라가나 읽기를 입력하세요</p>
+            <p id="wf-status" class="text-xs text-gray-400 mt-1 hidden">변환 중...</p>
           </div>
           <div id="wf-preview" class="p-3 bg-gray-50 rounded-lg ${initial && initial.furigana && initial.furigana.length ? '' : 'hidden'}">
             <p class="text-xs text-gray-500 mb-1">후리가나 미리보기</p>
@@ -364,19 +391,22 @@
       currentFurigana = initial && initial.furigana ? [...initial.furigana] : [];
       const jpInput = document.getElementById('wf-japanese');
 
-      // 읽기 입력 시 furigana pairs 자동 생성
-      const readingInput = document.getElementById('wf-reading');
-      function updateFuriganaFromReading() {
-        const jp = jpInput.value.trim();
-        const rd = readingInput.value.trim();
-        if (jp && rd) {
-          currentFurigana = [{ text: jp, reading: rd }];
-          document.getElementById('wf-preview').classList.remove('hidden');
-          document.getElementById('wf-preview-text').innerHTML = renderFurigana(currentFurigana, 'text-2xl');
-        }
-      }
-      readingInput.addEventListener('input', updateFuriganaFromReading);
-      jpInput.addEventListener('input', updateFuriganaFromReading);
+      // 일본어 입력 후 blur 시 자동 후리가나 변환 (Web Worker)
+      jpInput.addEventListener('blur', async () => {
+        const text = jpInput.value.trim();
+        if (!text) return;
+        const status = document.getElementById('wf-status');
+        status.classList.remove('hidden');
+        try {
+          const result = await convertFurigana(text);
+          document.getElementById('wf-reading').value = result.reading;
+          currentFurigana = result.pairs;
+          const preview = document.getElementById('wf-preview');
+          preview.classList.remove('hidden');
+          document.getElementById('wf-preview-text').innerHTML = renderFurigana(result.pairs, 'text-2xl');
+        } catch(e) { console.error(e); }
+        finally { status.classList.add('hidden'); }
+      });
 
       document.getElementById('wf').addEventListener('submit', (e) => {
         e.preventDefault();
@@ -493,6 +523,20 @@
       let knownCount = 0, unknownCount = 0;
       let answered = false;
 
+      // reading이 없는 단어는 Worker에서 백그라운드 변환
+      (async () => {
+        for (const w of deck) {
+          if (!w.reading) {
+            try {
+              const result = await convertFurigana(w.japanese);
+              w.reading = result.reading;
+              w.furigana = result.pairs;
+              store.update(w.id, { reading: result.reading, furigana: result.pairs });
+            } catch(e) {}
+          }
+        }
+      })();
+
       function normalize(s) {
         return s.replace(/\s+/g, '').toLowerCase();
       }
@@ -569,6 +613,15 @@
         if (!userAnswer) { input.focus(); return; }
 
         const w = deck[idx];
+        // reading이 아직 없으면 Worker에서 변환
+        if (!w.reading) {
+          try {
+            const result = await convertFurigana(w.japanese);
+            w.reading = result.reading;
+            w.furigana = result.pairs;
+            store.update(w.id, { reading: result.reading, furigana: result.pairs });
+          } catch(e) {}
+        }
         const correct = checkAnswer(userAnswer, w);
         answered = true;
 
