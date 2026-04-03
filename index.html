@@ -63,6 +63,14 @@
   <!-- Bottom Nav (mobile) -->
   <nav id="mobile-nav" class="mobile-nav fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 justify-around items-center h-16 z-50 safe-area-bottom"></nav>
 
+  <!-- 로딩 오버레이 -->
+  <div id="loading-overlay" class="fixed inset-0 bg-white/80 backdrop-blur-sm z-[9999] flex flex-col items-center justify-center hidden">
+    <div class="animate-spin w-10 h-10 border-4 border-indigo-200 border-t-indigo-600 rounded-full mb-4"></div>
+    <p id="loading-text" class="text-gray-600 text-sm">사전 로딩 중...</p>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/kuroshiro@1.2.0/dist/kuroshiro.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/kuroshiro-analyzer-kuromoji@1.1.0/dist/kuroshiro-analyzer-kuromoji.min.js"></script>
   <script>
     // ── Supabase Config ──
     const SUPABASE_URL = 'https://gudlfajkzbcwpycnjxyq.supabase.co';
@@ -190,45 +198,75 @@
       });
       localStorage.removeItem('tango-words');
       console.log(`✅ ${rows.length}개 단어를 Supabase로 마이그레이션 완료`);
-    }    // ── Furigana Worker ──
-    const furiganaWorker = new Worker('./furigana-worker.js');
-    const workerCallbacks = {};
-    let workerMsgId = 0;
-    const dictBase = new URL('./', window.location.href).href;
+    }
 
-    furiganaWorker.onmessage = function(e) {
-      const { id, result, error } = e.data;
-      const cb = workerCallbacks[id];
-      if (cb) {
-        clearTimeout(cb.timer);
-        delete workerCallbacks[id];
-        if (error) cb.reject(new Error(error));
-        else cb.resolve(result);
-      }
-    };
+    // ── Kuroshiro (로딩 오버레이 포함) ──
+    let kuroshiroInstance = null;
+    let kuroshiroPromise = null;
 
-    furiganaWorker.onerror = function(e) {
-      console.error('Worker error:', e);
-    };
+    function showLoading(msg) {
+      document.getElementById('loading-text').textContent = msg || '사전 로딩 중...';
+      document.getElementById('loading-overlay').classList.remove('hidden');
+    }
+    function hideLoading() {
+      document.getElementById('loading-overlay').classList.add('hidden');
+    }
 
-    function workerCall(type, text) {
-      return new Promise((resolve, reject) => {
-        const id = ++workerMsgId;
-        const timer = setTimeout(() => {
-          delete workerCallbacks[id];
-          reject(new Error('Worker timeout (30s)'));
-        }, 30000);
-        workerCallbacks[id] = { resolve, reject, timer };
-        furiganaWorker.postMessage({ id, type, text, dictBase });
+    function initKuroshiro() {
+      if (kuroshiroInstance) return Promise.resolve(kuroshiroInstance);
+      if (kuroshiroPromise) return kuroshiroPromise;
+      kuroshiroPromise = new Promise((resolve, reject) => {
+        showLoading('사전 로딩 중... (첫 실행 시 수초 소요)');
+        // requestAnimationFrame으로 오버레이가 화면에 그려진 후 실행
+        requestAnimationFrame(() => {
+          requestAnimationFrame(async () => {
+            try {
+              const KuroshiroClass = Kuroshiro.default || Kuroshiro;
+              const AnalyzerClass = KuromojiAnalyzer.default || KuromojiAnalyzer;
+              const k = new KuroshiroClass();
+              const base = new URL('./', window.location.href).href;
+              await k.init(new AnalyzerClass({ dictPath: base + 'dict' }));
+              kuroshiroInstance = k;
+              hideLoading();
+              resolve(k);
+            } catch(e) {
+              hideLoading();
+              kuroshiroPromise = null;
+              reject(e);
+            }
+          });
+        });
       });
+      return kuroshiroPromise;
     }
 
-    function convertFurigana(text) {
-      return workerCall('convert', text);
+    async function convertFurigana(text) {
+      const k = await initKuroshiro();
+      const [html, reading] = await Promise.all([
+        k.convert(text, { mode: 'furigana', to: 'hiragana' }),
+        k.convert(text, { mode: 'normal', to: 'hiragana' }),
+      ]);
+      return { html, reading, pairs: parseFuriganaHTML(html) };
     }
 
-    // 백그라운드에서 사전 미리 로드
-    workerCall('init', '').catch(() => {});
+    function parseFuriganaHTML(html) {
+      const pairs = [];
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      doc.body.childNodes.forEach(node => {
+        if (node.nodeType === Node.TEXT_NODE) {
+          const t = node.textContent || '';
+          if (t) pairs.push({ text: t, reading: '' });
+        } else if (node.nodeName === 'RUBY') {
+          let base = '', rd = '';
+          node.childNodes.forEach(c => {
+            if (c.nodeType === Node.TEXT_NODE) base += c.textContent || '';
+            else if (c.nodeName === 'RT') rd = c.textContent || '';
+          });
+          if (base) pairs.push({ text: base, reading: rd });
+        }
+      });
+      return pairs;
+    }
 
     function renderFurigana(pairs, cls = '') {
       return `<span class="${cls}" lang="ja">${pairs.map(p =>

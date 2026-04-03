@@ -1,4 +1,4 @@
-const CACHE_NAME = 'tango-v10';
+const CACHE_NAME = 'tango-v11';
 
 self.addEventListener('install', e => {
   self.skipWaiting();
