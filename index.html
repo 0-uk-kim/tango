@@ -67,6 +67,7 @@
 
   <script>
     // ── 디버그: 모바일 에러 표시 ──
+    document.title = 'Tango v5 loaded';
     window.onerror = function(msg, src, line, col, err) {
       const d = document.createElement('div');
       d.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:red;color:white;padding:12px;font-size:12px;word-break:break-all;';
@@ -79,6 +80,7 @@
       d.textContent = `PROMISE ERROR: ${e.reason}`;
       document.body.prepend(d);
     });
+    alert('v5 로드됨 - 이 알림이 보이면 최신 버전입니다');
 
     // ── Supabase Config ──
     const SUPABASE_URL = 'https://gudlfajkzbcwpycnjxyq.supabase.co';
