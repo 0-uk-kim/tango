@@ -438,11 +438,12 @@
       currentFurigana = initial && initial.furigana ? [...initial.furigana] : [];
       const jpInput = document.getElementById('wf-japanese');
 
-      // 일본어 입력 후 blur 시 자동 후리가나 변환 (Web Worker)
+      // 일본어 입력 후 blur 시 자동 후리가나 변환
       jpInput.addEventListener('blur', async () => {
         const text = jpInput.value.trim();
         if (!text) return;
         const status = document.getElementById('wf-status');
+        status.textContent = '변환 중...';
         status.classList.remove('hidden');
         try {
           const result = await convertFurigana(text);
@@ -451,7 +452,12 @@
           const preview = document.getElementById('wf-preview');
           preview.classList.remove('hidden');
           document.getElementById('wf-preview-text').innerHTML = renderFurigana(result.pairs, 'text-2xl');
-        } catch(e) { console.error(e); }
+        } catch(e) {
+          console.error(e);
+          status.textContent = '변환 실패: ' + (e.message || e);
+          status.style.color = 'red';
+          return;
+        }
         finally { status.classList.add('hidden'); }
       });
 
