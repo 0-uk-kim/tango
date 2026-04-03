@@ -67,6 +67,7 @@
   <div id="loading-overlay" class="fixed inset-0 bg-white/80 backdrop-blur-sm z-[9999] flex flex-col items-center justify-center hidden">
     <div class="animate-spin w-10 h-10 border-4 border-indigo-200 border-t-indigo-600 rounded-full mb-4"></div>
     <p id="loading-text" class="text-gray-600 text-sm">사전 로딩 중...</p>
+    <button id="loading-skip" class="mt-4 text-sm text-gray-400 hover:text-gray-600 underline hidden" onclick="skipKuroshiroInit()">건너뛰기 (직접 입력)</button>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/kuroshiro@1.2.0/dist/kuroshiro.min.js"></script>
@@ -203,21 +204,41 @@
     // ── Kuroshiro (로딩 오버레이 포함) ──
     let kuroshiroInstance = null;
     let kuroshiroPromise = null;
+    let kuroshiroSkipped = false;
+    let kuroshiroRejecter = null;
 
     function showLoading(msg) {
       document.getElementById('loading-text').textContent = msg || '사전 로딩 중...';
       document.getElementById('loading-overlay').classList.remove('hidden');
+      // 5초 후 건너뛰기 버튼 표시
+      setTimeout(() => {
+        const btn = document.getElementById('loading-skip');
+        if (btn) btn.classList.remove('hidden');
+      }, 5000);
     }
     function hideLoading() {
       document.getElementById('loading-overlay').classList.add('hidden');
+      const btn = document.getElementById('loading-skip');
+      if (btn) btn.classList.add('hidden');
+    }
+
+    function skipKuroshiroInit() {
+      kuroshiroSkipped = true;
+      hideLoading();
+      if (kuroshiroRejecter) {
+        kuroshiroRejecter(new Error('skipped'));
+        kuroshiroRejecter = null;
+      }
+      kuroshiroPromise = null;
     }
 
     function initKuroshiro() {
+      if (kuroshiroSkipped) return Promise.reject(new Error('skipped'));
       if (kuroshiroInstance) return Promise.resolve(kuroshiroInstance);
       if (kuroshiroPromise) return kuroshiroPromise;
       kuroshiroPromise = new Promise((resolve, reject) => {
-        showLoading('사전 로딩 중... (첫 실행 시 수초 소요)');
-        // requestAnimationFrame으로 오버레이가 화면에 그려진 후 실행
+        kuroshiroRejecter = reject;
+        showLoading('사전 로딩 중... (첫 실행 시 수십초 소요)');
         requestAnimationFrame(() => {
           requestAnimationFrame(async () => {
             try {
@@ -227,9 +248,11 @@
               const base = new URL('./', window.location.href).href;
               await k.init(new AnalyzerClass({ dictPath: base + 'dict' }));
               kuroshiroInstance = k;
+              kuroshiroRejecter = null;
               hideLoading();
               resolve(k);
             } catch(e) {
+              kuroshiroRejecter = null;
               hideLoading();
               kuroshiroPromise = null;
               reject(e);
@@ -454,11 +477,24 @@
           document.getElementById('wf-preview-text').innerHTML = renderFurigana(result.pairs, 'text-2xl');
         } catch(e) {
           console.error(e);
-          status.textContent = '변환 실패: ' + (e.message || e);
-          status.style.color = 'red';
+          status.textContent = '자동 변환 불가 — 읽기를 직접 입력해주세요';
+          status.style.color = '#6b7280';
+          status.classList.remove('hidden');
           return;
         }
-        finally { status.classList.add('hidden'); }
+        status.classList.add('hidden');
+      });
+
+      // 읽기를 직접 입력할 때도 furigana 생성
+      const readingInput = document.getElementById('wf-reading');
+      readingInput.addEventListener('input', () => {
+        const jp = jpInput.value.trim();
+        const rd = readingInput.value.trim();
+        if (jp && rd) {
+          currentFurigana = [{ text: jp, reading: rd }];
+          document.getElementById('wf-preview').classList.remove('hidden');
+          document.getElementById('wf-preview-text').innerHTML = renderFurigana(currentFurigana, 'text-2xl');
+        }
       });
 
       document.getElementById('wf').addEventListener('submit', (e) => {
