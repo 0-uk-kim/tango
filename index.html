@@ -200,16 +200,25 @@
       const { id, result, error } = e.data;
       const cb = workerCallbacks[id];
       if (cb) {
+        clearTimeout(cb.timer);
         delete workerCallbacks[id];
         if (error) cb.reject(new Error(error));
         else cb.resolve(result);
       }
     };
 
+    furiganaWorker.onerror = function(e) {
+      console.error('Worker error:', e);
+    };
+
     function workerCall(type, text) {
       return new Promise((resolve, reject) => {
         const id = ++workerMsgId;
-        workerCallbacks[id] = { resolve, reject };
+        const timer = setTimeout(() => {
+          delete workerCallbacks[id];
+          reject(new Error('Worker timeout (30s)'));
+        }, 30000);
+        workerCallbacks[id] = { resolve, reject, timer };
         furiganaWorker.postMessage({ id, type, text, dictBase });
       });
     }

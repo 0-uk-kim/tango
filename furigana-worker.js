@@ -1,7 +1,15 @@
-importScripts(
-  'https://cdn.jsdelivr.net/npm/kuroshiro@1.2.0/dist/kuroshiro.min.js',
-  'https://cdn.jsdelivr.net/npm/kuroshiro-analyzer-kuromoji@1.1.0/dist/kuroshiro-analyzer-kuromoji.min.js'
-);
+// Web Worker에서 브라우저 전역 객체 폴리필
+self.window = self;
+self.document = { createElementNS: () => ({}) };
+
+try {
+  importScripts(
+    'https://cdn.jsdelivr.net/npm/kuroshiro@1.2.0/dist/kuroshiro.min.js',
+    'https://cdn.jsdelivr.net/npm/kuroshiro-analyzer-kuromoji@1.1.0/dist/kuroshiro-analyzer-kuromoji.min.js'
+  );
+} catch(e) {
+  self.postMessage({ id: 0, error: 'importScripts failed: ' + e.message });
+}
 
 let kuroshiro = null;
 let initPromise = null;
@@ -10,8 +18,8 @@ async function init(dictBase) {
   if (kuroshiro) return;
   if (initPromise) return initPromise;
   initPromise = (async () => {
-    const KuroshiroClass = Kuroshiro.default || Kuroshiro;
-    const AnalyzerClass = KuromojiAnalyzer.default || KuromojiAnalyzer;
+    const KuroshiroClass = (typeof Kuroshiro !== 'undefined' && Kuroshiro.default) || Kuroshiro;
+    const AnalyzerClass = (typeof KuromojiAnalyzer !== 'undefined' && KuromojiAnalyzer.default) || KuromojiAnalyzer;
     const k = new KuroshiroClass();
     await k.init(new AnalyzerClass({ dictPath: dictBase + 'dict' }));
     kuroshiro = k;
@@ -20,7 +28,6 @@ async function init(dictBase) {
 }
 
 function parseFuriganaHTML(html) {
-  // Worker에는 DOMParser가 없으므로 정규식으로 파싱
   const pairs = [];
   const regex = /<ruby>([^<]*)<rp>\(<\/rp><rt>([^<]*)<\/rt><rp>\)<\/rp><\/ruby>|([^<]+)/g;
   let m;
@@ -51,6 +58,6 @@ self.onmessage = async function(e) {
       self.postMessage({ id, result: { html, reading, pairs } });
     }
   } catch (err) {
-    self.postMessage({ id, error: err.message || String(err) });
+    self.postMessage({ id, error: 'worker error: ' + (err.message || String(err)) });
   }
 };
