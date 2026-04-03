@@ -11,8 +11,6 @@
   <link rel="apple-touch-icon" href="./icon-192.png">
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
-  <script src="https://cdn.jsdelivr.net/npm/kuroshiro@1.2.0/dist/kuroshiro.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/kuroshiro-analyzer-kuromoji@1.1.0/dist/kuroshiro-analyzer-kuromoji.min.js"></script>
   <script>
     tailwind.config = {
       theme: {
@@ -194,54 +192,7 @@
       console.log(`✅ ${rows.length}개 단어를 Supabase로 마이그레이션 완료`);
     }
 
-    // ── Kuroshiro ──
-    let kuroshiroInstance = null;
-    let kuroshiroPromise = null;
 
-    async function initKuroshiro() {
-      if (kuroshiroInstance) return kuroshiroInstance;
-      if (kuroshiroPromise) return kuroshiroPromise;
-      kuroshiroPromise = (async () => {
-        const KuroshiroClass = Kuroshiro.default || Kuroshiro;
-        const AnalyzerClass = KuromojiAnalyzer.default || KuromojiAnalyzer;
-        const k = new KuroshiroClass();
-        const base = new URL('./', window.location.href).href;
-        await k.init(new AnalyzerClass({
-          dictPath: base + 'dict'
-        }));
-        kuroshiroInstance = k;
-        return k;
-      })();
-      return kuroshiroPromise;
-    }
-
-    async function convertFurigana(text) {
-      const k = await initKuroshiro();
-      const [html, reading] = await Promise.all([
-        k.convert(text, { mode: 'furigana', to: 'hiragana' }),
-        k.convert(text, { mode: 'normal', to: 'hiragana' }),
-      ]);
-      return { html, reading, pairs: parseFuriganaHTML(html) };
-    }
-
-    function parseFuriganaHTML(html) {
-      const pairs = [];
-      const doc = new DOMParser().parseFromString(html, 'text/html');
-      doc.body.childNodes.forEach(node => {
-        if (node.nodeType === Node.TEXT_NODE) {
-          const t = node.textContent || '';
-          if (t) pairs.push({ text: t, reading: '' });
-        } else if (node.nodeName === 'RUBY') {
-          let base = '', rd = '';
-          node.childNodes.forEach(c => {
-            if (c.nodeType === Node.TEXT_NODE) base += c.textContent || '';
-            else if (c.nodeName === 'RT') rd = c.textContent || '';
-          });
-          if (base) pairs.push({ text: base, reading: rd });
-        }
-      });
-      return pairs;
-    }
 
     function renderFurigana(pairs, cls = '') {
       return `<span class="${cls}" lang="ja">${pairs.map(p =>
@@ -391,7 +342,7 @@
             <label for="wf-reading" class="block text-sm font-medium text-gray-700 mb-1">읽기 (히라가나)</label>
             <input id="wf-reading" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
               value="${initial ? esc(initial.reading) : ''}" placeholder="例: たべる" lang="ja">
-            <p id="wf-status" class="text-xs text-gray-400 mt-1 hidden">변환 중...</p>
+            <p class="text-xs text-gray-400 mt-1">일본어의 히라가나 읽기를 입력하세요</p>
           </div>
           <div id="wf-preview" class="p-3 bg-gray-50 rounded-lg ${initial && initial.furigana && initial.furigana.length ? '' : 'hidden'}">
             <p class="text-xs text-gray-500 mb-1">후리가나 미리보기</p>
@@ -413,21 +364,19 @@
       currentFurigana = initial && initial.furigana ? [...initial.furigana] : [];
       const jpInput = document.getElementById('wf-japanese');
 
-      jpInput.addEventListener('blur', async () => {
-        const text = jpInput.value.trim();
-        if (!text) return;
-        const status = document.getElementById('wf-status');
-        status.classList.remove('hidden');
-        try {
-          const result = await convertFurigana(text);
-          document.getElementById('wf-reading').value = result.reading;
-          currentFurigana = result.pairs;
-          const preview = document.getElementById('wf-preview');
-          preview.classList.remove('hidden');
-          document.getElementById('wf-preview-text').innerHTML = renderFurigana(result.pairs, 'text-2xl');
-        } catch(e) { console.error(e); }
-        finally { status.classList.add('hidden'); }
-      });
+      // 읽기 입력 시 furigana pairs 자동 생성
+      const readingInput = document.getElementById('wf-reading');
+      function updateFuriganaFromReading() {
+        const jp = jpInput.value.trim();
+        const rd = readingInput.value.trim();
+        if (jp && rd) {
+          currentFurigana = [{ text: jp, reading: rd }];
+          document.getElementById('wf-preview').classList.remove('hidden');
+          document.getElementById('wf-preview-text').innerHTML = renderFurigana(currentFurigana, 'text-2xl');
+        }
+      }
+      readingInput.addEventListener('input', updateFuriganaFromReading);
+      jpInput.addEventListener('input', updateFuriganaFromReading);
 
       document.getElementById('wf').addEventListener('submit', (e) => {
         e.preventDefault();
@@ -544,20 +493,6 @@
       let knownCount = 0, unknownCount = 0;
       let answered = false;
 
-      // reading이 없는 단어는 백그라운드에서 변환 (UI 블로킹 없음)
-      (async () => {
-        for (const w of deck) {
-          if (!w.reading) {
-            try {
-              const result = await convertFurigana(w.japanese);
-              w.reading = result.reading;
-              w.furigana = result.pairs;
-              store.update(w.id, { reading: result.reading, furigana: result.pairs });
-            } catch(e) { console.error('furigana prefetch failed', e); }
-          }
-        }
-      })();
-
       function normalize(s) {
         return s.replace(/\s+/g, '').toLowerCase();
       }
@@ -634,15 +569,6 @@
         if (!userAnswer) { input.focus(); return; }
 
         const w = deck[idx];
-        // reading이 아직 없으면 이 시점에 변환 시도
-        if (!w.reading) {
-          try {
-            const result = await convertFurigana(w.japanese);
-            w.reading = result.reading;
-            w.furigana = result.pairs;
-            store.update(w.id, { reading: result.reading, furigana: result.pairs });
-          } catch(e) { console.error('furigana conversion failed', e); }
-        }
         const correct = checkAnswer(userAnswer, w);
         answered = true;
 
