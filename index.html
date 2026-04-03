@@ -546,17 +546,19 @@
       let knownCount = 0, unknownCount = 0;
       let answered = false;
 
-      // reading이 없는 단어는 미리 변환
-      for (const w of deck) {
-        if (!w.reading) {
-          try {
-            const result = await convertFurigana(w.japanese);
-            w.reading = result.reading;
-            w.furigana = result.pairs;
-            store.update(w.id, { reading: result.reading, furigana: result.pairs });
-          } catch(e) { console.error('furigana prefetch failed', e); }
+      // reading이 없는 단어는 백그라운드에서 변환 (UI 블로킹 없음)
+      (async () => {
+        for (const w of deck) {
+          if (!w.reading) {
+            try {
+              const result = await convertFurigana(w.japanese);
+              w.reading = result.reading;
+              w.furigana = result.pairs;
+              store.update(w.id, { reading: result.reading, furigana: result.pairs });
+            } catch(e) { console.error('furigana prefetch failed', e); }
+          }
         }
-      }
+      })();
 
       function normalize(s) {
         return s.replace(/\s+/g, '').toLowerCase();
@@ -634,6 +636,15 @@
         if (!userAnswer) { input.focus(); return; }
 
         const w = deck[idx];
+        // reading이 아직 없으면 이 시점에 변환 시도
+        if (!w.reading) {
+          try {
+            const result = await convertFurigana(w.japanese);
+            w.reading = result.reading;
+            w.furigana = result.pairs;
+            store.update(w.id, { reading: result.reading, furigana: result.pairs });
+          } catch(e) { console.error('furigana conversion failed', e); }
+        }
         const correct = checkAnswer(userAnswer, w);
         answered = true;
 
