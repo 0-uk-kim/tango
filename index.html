@@ -63,15 +63,15 @@
   <!-- Bottom Nav (mobile) -->
   <nav id="mobile-nav" class="mobile-nav fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 justify-around items-center h-16 z-50 safe-area-bottom"></nav>
 
-  <!-- 로딩 오버레이 -->
-  <div id="loading-overlay" class="fixed inset-0 bg-white/80 backdrop-blur-sm z-[9999] flex flex-col items-center justify-center hidden">
-    <div class="animate-spin w-10 h-10 border-4 border-indigo-200 border-t-indigo-600 rounded-full mb-4"></div>
-    <p id="loading-text" class="text-gray-600 text-sm">사전 로딩 중...</p>
-    <button id="loading-skip" class="mt-4 text-sm text-gray-400 hover:text-gray-600 underline hidden" onclick="skipKuroshiroInit()">건너뛰기 (직접 입력)</button>
-  </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/kuroshiro@1.2.0/dist/kuroshiro.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/kuroshiro-analyzer-kuromoji@1.1.0/dist/kuroshiro-analyzer-kuromoji.min.js"></script>
+
+  <script>
+    // 모바일이 아닌 경우에만 kuroshiro 로드
+    if (!/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
+      document.write('<script src="https://cdn.jsdelivr.net/npm/kuroshiro@1.2.0/dist/kuroshiro.min.js"><\/script>');
+      document.write('<script src="https://cdn.jsdelivr.net/npm/kuroshiro-analyzer-kuromoji@1.1.0/dist/kuroshiro-analyzer-kuromoji.min.js"><\/script>');
+    }
+  </script>
   <script>
     // ── Supabase Config ──
     const SUPABASE_URL = 'https://gudlfajkzbcwpycnjxyq.supabase.co';
@@ -201,65 +201,26 @@
       console.log(`✅ ${rows.length}개 단어를 Supabase로 마이그레이션 완료`);
     }
 
-    // ── Kuroshiro (로딩 오버레이 포함) ──
+    // ── Kuroshiro ──
     let kuroshiroInstance = null;
     let kuroshiroPromise = null;
-    let kuroshiroSkipped = false;
-    let kuroshiroRejecter = null;
-
-    function showLoading(msg) {
-      document.getElementById('loading-text').textContent = msg || '사전 로딩 중...';
-      document.getElementById('loading-overlay').classList.remove('hidden');
-      // 5초 후 건너뛰기 버튼 표시
-      setTimeout(() => {
-        const btn = document.getElementById('loading-skip');
-        if (btn) btn.classList.remove('hidden');
-      }, 5000);
-    }
-    function hideLoading() {
-      document.getElementById('loading-overlay').classList.add('hidden');
-      const btn = document.getElementById('loading-skip');
-      if (btn) btn.classList.add('hidden');
-    }
-
-    function skipKuroshiroInit() {
-      kuroshiroSkipped = true;
-      hideLoading();
-      if (kuroshiroRejecter) {
-        kuroshiroRejecter(new Error('skipped'));
-        kuroshiroRejecter = null;
-      }
-      kuroshiroPromise = null;
-    }
 
     function initKuroshiro() {
-      if (kuroshiroSkipped) return Promise.reject(new Error('skipped'));
       if (kuroshiroInstance) return Promise.resolve(kuroshiroInstance);
       if (kuroshiroPromise) return kuroshiroPromise;
-      kuroshiroPromise = new Promise((resolve, reject) => {
-        kuroshiroRejecter = reject;
-        showLoading('사전 로딩 중... (첫 실행 시 수십초 소요)');
-        requestAnimationFrame(() => {
-          requestAnimationFrame(async () => {
-            try {
-              const KuroshiroClass = Kuroshiro.default || Kuroshiro;
-              const AnalyzerClass = KuromojiAnalyzer.default || KuromojiAnalyzer;
-              const k = new KuroshiroClass();
-              const base = new URL('./', window.location.href).href;
-              await k.init(new AnalyzerClass({ dictPath: base + 'dict' }));
-              kuroshiroInstance = k;
-              kuroshiroRejecter = null;
-              hideLoading();
-              resolve(k);
-            } catch(e) {
-              kuroshiroRejecter = null;
-              hideLoading();
-              kuroshiroPromise = null;
-              reject(e);
-            }
-          });
-        });
-      });
+      kuroshiroPromise = (async () => {
+        try {
+          const KuroshiroClass = Kuroshiro.default || Kuroshiro;
+          const AnalyzerClass = KuromojiAnalyzer.default || KuromojiAnalyzer;
+          const k = new KuroshiroClass();
+          await k.init(new AnalyzerClass({ dictPath: './dict' }));
+          kuroshiroInstance = k;
+          return k;
+        } catch(e) {
+          kuroshiroPromise = null;
+          throw e;
+        }
+      })();
       return kuroshiroPromise;
     }
 
@@ -439,7 +400,7 @@
             <label for="wf-reading" class="block text-sm font-medium text-gray-700 mb-1">읽기 (히라가나)</label>
             <input id="wf-reading" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
               value="${initial ? esc(initial.reading) : ''}" placeholder="例: たべる" lang="ja">
-            <p id="wf-status" class="text-xs text-gray-400 mt-1 hidden">변환 중...</p>
+            <p id="wf-status" class="text-xs text-gray-400 mt-1 hidden flex items-center gap-1"><span id="wf-spinner" class="inline-block w-3 h-3 border-2 border-gray-300 border-t-indigo-500 rounded-full animate-spin"></span><span id="wf-status-text">변환 중...</span></p>
           </div>
           <div id="wf-preview" class="p-3 bg-gray-50 rounded-lg ${initial && initial.furigana && initial.furigana.length ? '' : 'hidden'}">
             <p class="text-xs text-gray-500 mb-1">후리가나 미리보기</p>
@@ -461,29 +422,35 @@
       currentFurigana = initial && initial.furigana ? [...initial.furigana] : [];
       const jpInput = document.getElementById('wf-japanese');
 
-      // 일본어 입력 후 blur 시 자동 후리가나 변환
-      jpInput.addEventListener('blur', async () => {
-        const text = jpInput.value.trim();
-        if (!text) return;
-        const status = document.getElementById('wf-status');
-        status.textContent = '변환 중...';
-        status.classList.remove('hidden');
-        try {
-          const result = await convertFurigana(text);
-          document.getElementById('wf-reading').value = result.reading;
-          currentFurigana = result.pairs;
-          const preview = document.getElementById('wf-preview');
-          preview.classList.remove('hidden');
-          document.getElementById('wf-preview-text').innerHTML = renderFurigana(result.pairs, 'text-2xl');
-        } catch(e) {
-          console.error(e);
-          status.textContent = '자동 변환 불가 — 읽기를 직접 입력해주세요';
-          status.style.color = '#6b7280';
+      // 일본어 입력 후 blur 시 자동 후리가나 변환 (PC만)
+      const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+      if (!isMobile) {
+        jpInput.addEventListener('blur', async () => {
+          const text = jpInput.value.trim();
+          if (!text) return;
+          const status = document.getElementById('wf-status');
+          const spinner = document.getElementById('wf-spinner');
+          const statusText = document.getElementById('wf-status-text');
+          statusText.textContent = '변환 중...';
+          spinner.classList.remove('hidden');
+          status.style.color = '';
           status.classList.remove('hidden');
-          return;
-        }
-        status.classList.add('hidden');
-      });
+          try {
+            const result = await convertFurigana(text);
+            document.getElementById('wf-reading').value = result.reading;
+            currentFurigana = result.pairs;
+            const preview = document.getElementById('wf-preview');
+            preview.classList.remove('hidden');
+            document.getElementById('wf-preview-text').innerHTML = renderFurigana(result.pairs, 'text-2xl');
+          } catch(e) {
+            console.error(e);
+            spinner.classList.add('hidden');
+            statusText.textContent = '자동 변환 불가 — 읽기를 직접 입력해주세요';
+            return;
+          }
+          status.classList.add('hidden');
+        });
+      }
 
       // 읽기를 직접 입력할 때도 furigana 생성
       const readingInput = document.getElementById('wf-reading');
@@ -612,19 +579,21 @@
       let knownCount = 0, unknownCount = 0;
       let answered = false;
 
-      // reading이 없는 단어는 Worker에서 백그라운드 변환
-      (async () => {
-        for (const w of deck) {
-          if (!w.reading) {
-            try {
-              const result = await convertFurigana(w.japanese);
-              w.reading = result.reading;
-              w.furigana = result.pairs;
-              store.update(w.id, { reading: result.reading, furigana: result.pairs });
-            } catch(e) {}
+      // reading이 없는 단어는 백그라운드 변환 (PC만)
+      if (!/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
+        (async () => {
+          for (const w of deck) {
+            if (!w.reading) {
+              try {
+                const result = await convertFurigana(w.japanese);
+                w.reading = result.reading;
+                w.furigana = result.pairs;
+                store.update(w.id, { reading: result.reading, furigana: result.pairs });
+              } catch(e) {}
+            }
           }
-        }
-      })();
+        })();
+      }
 
       function normalize(s) {
         return s.replace(/\s+/g, '').toLowerCase();
@@ -702,8 +671,8 @@
         if (!userAnswer) { input.focus(); return; }
 
         const w = deck[idx];
-        // reading이 아직 없으면 Worker에서 변환
-        if (!w.reading) {
+        // reading이 아직 없으면 변환 시도 (PC만)
+        if (!w.reading && !/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
           try {
             const result = await convertFurigana(w.japanese);
             w.reading = result.reading;
