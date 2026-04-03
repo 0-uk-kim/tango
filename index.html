@@ -542,18 +542,49 @@
 
       // 셔플
       const deck = [...allWords].sort(() => Math.random() - 0.5);
-      let idx = 0, flipped = false;
+      let idx = 0;
       let knownCount = 0, unknownCount = 0;
+      let answered = false;
+
+      // reading이 없는 단어는 미리 변환
+      for (const w of deck) {
+        if (!w.reading) {
+          try {
+            const result = await convertFurigana(w.japanese);
+            w.reading = result.reading;
+            w.furigana = result.pairs;
+            store.update(w.id, { reading: result.reading, furigana: result.pairs });
+          } catch(e) { console.error('furigana prefetch failed', e); }
+        }
+      }
+
+      function normalize(s) {
+        return s.replace(/\s+/g, '').toLowerCase();
+      }
+
+      function checkAnswer(input, word) {
+        const n = normalize(input);
+        if (!n) return false;
+        // 히라가나 reading 일치
+        if (word.reading && normalize(word.reading) === n) return true;
+        // 일본어 원문 일치
+        if (normalize(word.japanese) === n) return true;
+        // furigana pairs에서 reading만 합친 것과 비교
+        if (word.furigana && word.furigana.length > 0) {
+          const fullReading = word.furigana.map(p => p.reading || p.text).join('');
+          if (normalize(fullReading) === n) return true;
+        }
+        return false;
+      }
 
       function renderCard() {
         if (idx >= deck.length) {
-          // 완료
           document.getElementById('main').innerHTML = `
             <div class="text-center py-20">
               <h2 class="text-2xl font-bold mb-4">학습 완료!</h2>
               <div class="flex justify-center gap-8 mb-8">
-                <div><p class="text-3xl font-bold text-green-600">${knownCount}</p><p class="text-sm text-gray-500">알아 ✓</p></div>
-                <div><p class="text-3xl font-bold text-red-500">${unknownCount}</p><p class="text-sm text-gray-500">모름 ✗</p></div>
+                <div><p class="text-3xl font-bold text-green-600">${knownCount}</p><p class="text-sm text-gray-500">정답 ✓</p></div>
+                <div><p class="text-3xl font-bold text-red-500">${unknownCount}</p><p class="text-sm text-gray-500">오답 ✗</p></div>
               </div>
               <button onclick="renderStudy()" class="inline-flex items-center justify-center rounded-lg font-medium px-6 py-3 text-base bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm">다시 학습</button>
             </div>
@@ -564,6 +595,7 @@
 
         const w = deck[idx];
         const pct = ((idx + 1) / deck.length * 100).toFixed(0);
+        answered = false;
 
         document.getElementById('main').innerHTML = `
           <h1 class="text-2xl font-bold mb-6">학습</h1>
@@ -575,76 +607,99 @@
               <div class="h-full bg-indigo-500 rounded-full transition-all duration-300" style="width:${pct}%"></div>
             </div>
           </div>
-          <div class="flip-card w-full max-w-lg mx-auto cursor-pointer" id="card">
-            <div class="flip-card-inner relative w-full h-64" id="card-inner">
-              <div class="flip-card-front absolute inset-0 flex items-center justify-center rounded-2xl bg-white border-2 border-gray-200 shadow-lg p-8">
-                <p class="text-3xl font-medium text-gray-800">${esc(w.meaning)}</p>
-              </div>
-              <div class="flip-card-back absolute inset-0 flex flex-col items-center justify-center rounded-2xl bg-indigo-50 border-2 border-indigo-200 shadow-lg p-8">
-                <span id="furigana-display" class="text-4xl" lang="ja">${esc(w.japanese)}</span>
-                <p class="text-lg text-gray-500 mt-4">${esc(w.meaning)}</p>
-              </div>
+          <div class="w-full max-w-lg mx-auto">
+            <div class="flex items-center justify-center rounded-2xl bg-white border-2 border-gray-200 shadow-lg p-8 mb-6 min-h-[10rem]">
+              <p class="text-3xl font-medium text-gray-800">${esc(w.meaning)}</p>
             </div>
-          </div>
-          <div id="controls" class="flex justify-center mt-8">
-            ${flipped
-              ? `<button id="btn-unknown" class="inline-flex items-center justify-center rounded-lg font-medium px-6 py-3 text-base bg-red-600 text-white hover:bg-red-700 shadow-sm mr-4">모름 ✗ (←)</button>
-                 <button id="btn-known" class="inline-flex items-center justify-center rounded-lg font-medium px-6 py-3 text-base bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm">알아! ✓ (→)</button>`
-              : `<button id="btn-flip" class="inline-flex items-center justify-center rounded-lg font-medium px-6 py-3 text-base bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm">카드 뒤집기 (Space)</button>`
-            }
+            <div class="flex gap-2 mb-4">
+              <input id="answer-input" type="text" lang="ja" autocomplete="off" placeholder="히라가나 또는 단어를 입력하세요"
+                class="flex-1 rounded-lg border-2 border-gray-300 px-4 py-3 text-lg focus:border-indigo-500 focus:outline-none font-sans" style="font-family:'Noto Sans JP','Noto Sans KR',sans-serif">
+              <button id="btn-submit" class="inline-flex items-center justify-center rounded-lg font-medium px-6 py-3 text-base bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm">확인</button>
+            </div>
+            <button id="btn-skip" class="w-full text-center text-sm text-gray-400 hover:text-gray-600 py-2">모르겠어요 (건너뛰기)</button>
+            <div id="result-area" class="mt-4"></div>
           </div>
         `;
 
-        if (!flipped) {
-          document.getElementById('card').onclick = doFlip;
-          document.getElementById('btn-flip').onclick = doFlip;
-        } else {
-          document.getElementById('card-inner').classList.add('flipped');
-          document.getElementById('btn-known').onclick = () => answer(true);
-          document.getElementById('btn-unknown').onclick = () => answer(false);
-        }
+        const input = document.getElementById('answer-input');
+        input.focus();
+        document.getElementById('btn-submit').onclick = () => submitAnswer();
+        document.getElementById('btn-skip').onclick = () => skipAnswer();
       }
 
-      async function doFlip() {
-        flipped = true;
-        const inner = document.getElementById('card-inner');
-        inner.classList.add('flipped');
-        // 후리가나 변환 시도
-        const w = deck[idx];
-        const display = document.getElementById('furigana-display');
-        try {
-          let pairs = w.furigana && w.furigana.length > 0 ? w.furigana : null;
-          if (!pairs) {
-            const result = await convertFurigana(w.japanese);
-            pairs = result.pairs;
-            // DB에도 업데이트
-            w.furigana = pairs;
-            store.update(w.id, { furigana: pairs, reading: result.reading });
-          }
-          if (pairs && pairs.length > 0) {
-            display.innerHTML = renderFurigana(pairs, 'text-4xl');
-          }
-        } catch(e) { console.error('furigana conversion failed', e); }
-        // 버튼 전환
-        document.getElementById('controls').innerHTML =
-          `<button id="btn-unknown" class="inline-flex items-center justify-center rounded-lg font-medium px-6 py-3 text-base bg-red-600 text-white hover:bg-red-700 shadow-sm mr-4">모름 ✗ (←)</button>
-           <button id="btn-known" class="inline-flex items-center justify-center rounded-lg font-medium px-6 py-3 text-base bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm">알아! ✓ (→)</button>`;
-        document.getElementById('btn-known').onclick = () => answer(true);
-        document.getElementById('btn-unknown').onclick = () => answer(false);
-      }
+      async function submitAnswer() {
+        if (answered) return;
+        const input = document.getElementById('answer-input');
+        const userAnswer = input.value.trim();
+        if (!userAnswer) { input.focus(); return; }
 
-      async function answer(known) {
         const w = deck[idx];
-        const now = Date.now();
-        if (known) {
+        const correct = checkAnswer(userAnswer, w);
+        answered = true;
+
+        // 정답 표시 영역
+        const resultArea = document.getElementById('result-area');
+        const answerDisplay = w.furigana && w.furigana.length > 0
+          ? renderFurigana(w.furigana, 'text-2xl')
+          : `<span class="text-2xl" lang="ja">${esc(w.japanese)}</span>`;
+        const readingText = w.reading ? ` (${esc(w.reading)})` : '';
+
+        if (correct) {
           knownCount++;
-          await store.update(w.id, { knownCount: w.knownCount + 1, lastStudiedAt: now });
+          resultArea.innerHTML = `
+            <div class="rounded-xl bg-green-50 border-2 border-green-300 p-4 text-center">
+              <p class="text-green-600 font-bold text-lg mb-2">정답! ✓</p>
+              <div>${answerDisplay}</div>
+            </div>
+          `;
+          await store.update(w.id, { knownCount: w.knownCount + 1, lastStudiedAt: Date.now() });
         } else {
           unknownCount++;
-          await store.update(w.id, { unknownCount: w.unknownCount + 1, lastStudiedAt: now });
+          resultArea.innerHTML = `
+            <div class="rounded-xl bg-red-50 border-2 border-red-300 p-4 text-center">
+              <p class="text-red-500 font-bold text-lg mb-2">오답 ✗</p>
+              <p class="text-sm text-gray-500 mb-1">내 답: <span lang="ja">${esc(userAnswer)}</span></p>
+              <p class="text-sm text-gray-500 mb-2">정답:</p>
+              <div>${answerDisplay}${readingText ? `<span class="text-sm text-gray-400 ml-2">${readingText}</span>` : ''}</div>
+            </div>
+          `;
+          await store.update(w.id, { unknownCount: w.unknownCount + 1, lastStudiedAt: Date.now() });
         }
+
+        // 다음 버튼
+        resultArea.innerHTML += `
+          <button id="btn-next" class="mt-4 w-full inline-flex items-center justify-center rounded-lg font-medium px-6 py-3 text-base bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm">다음 (Enter)</button>
+        `;
+        document.getElementById('btn-next').onclick = nextCard;
+        document.getElementById('btn-next').focus();
+      }
+
+      async function skipAnswer() {
+        if (answered) return;
+        answered = true;
+        const w = deck[idx];
+        unknownCount++;
+        await store.update(w.id, { unknownCount: w.unknownCount + 1, lastStudiedAt: Date.now() });
+
+        const answerDisplay = w.furigana && w.furigana.length > 0
+          ? renderFurigana(w.furigana, 'text-2xl')
+          : `<span class="text-2xl" lang="ja">${esc(w.japanese)}</span>`;
+        const readingText = w.reading ? ` (${esc(w.reading)})` : '';
+
+        const resultArea = document.getElementById('result-area');
+        resultArea.innerHTML = `
+          <div class="rounded-xl bg-yellow-50 border-2 border-yellow-300 p-4 text-center">
+            <p class="text-yellow-600 font-bold text-lg mb-2">정답 확인</p>
+            <div>${answerDisplay}${readingText ? `<span class="text-sm text-gray-400 ml-2">${readingText}</span>` : ''}</div>
+          </div>
+          <button id="btn-next" class="mt-4 w-full inline-flex items-center justify-center rounded-lg font-medium px-6 py-3 text-base bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm">다음 (Enter)</button>
+        `;
+        document.getElementById('btn-next').onclick = nextCard;
+        document.getElementById('btn-next').focus();
+      }
+
+      function nextCard() {
         idx++;
-        flipped = false;
         renderCard();
       }
 
@@ -653,9 +708,14 @@
           window.removeEventListener('keydown', handleKey);
           return;
         }
-        if (e.key === ' ' || e.code === 'Space') { e.preventDefault(); if (!flipped) doFlip(); }
-        else if (e.key === 'ArrowRight' && flipped) answer(true);
-        else if (e.key === 'ArrowLeft' && flipped) answer(false);
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          if (answered) {
+            nextCard();
+          } else {
+            submitAnswer();
+          }
+        }
       }
 
       window.addEventListener('keydown', handleKey);
