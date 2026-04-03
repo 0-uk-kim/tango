@@ -26,14 +26,15 @@
   </script>
   <style>
     ruby rt { font-size: 0.55em; color: #6b7280; }
-    .flip-card { perspective: 1000px; }
+    .flip-card { -webkit-perspective: 1000px; perspective: 1000px; }
     .flip-card-inner {
       transition: transform 0.5s;
+      -webkit-transform-style: preserve-3d;
       transform-style: preserve-3d;
     }
-    .flip-card-inner.flipped { transform: rotateY(180deg); }
-    .flip-card-front, .flip-card-back { backface-visibility: hidden; }
-    .flip-card-back { transform: rotateY(180deg); }
+    .flip-card-inner.flipped { -webkit-transform: rotateY(180deg); transform: rotateY(180deg); }
+    .flip-card-front, .flip-card-back { -webkit-backface-visibility: hidden; backface-visibility: hidden; }
+    .flip-card-back { -webkit-transform: rotateY(180deg); transform: rotateY(180deg); }
     /* 모바일 하단 네비 */
     .safe-area-bottom { padding-bottom: env(safe-area-inset-bottom); }
     @media (max-width: 639px) {
@@ -204,8 +205,9 @@
         const KuroshiroClass = Kuroshiro.default || Kuroshiro;
         const AnalyzerClass = KuromojiAnalyzer.default || KuromojiAnalyzer;
         const k = new KuroshiroClass();
+        const base = new URL('./', window.location.href).href;
         await k.init(new AnalyzerClass({
-          dictPath: './dict'
+          dictPath: base + 'dict'
         }));
         kuroshiroInstance = k;
         return k;
@@ -574,12 +576,12 @@
             </div>
           </div>
           <div class="flip-card w-full max-w-lg mx-auto cursor-pointer" id="card">
-            <div class="flip-card-inner relative w-full h-64 ${flipped ? 'flipped' : ''}" id="card-inner">
+            <div class="flip-card-inner relative w-full h-64" id="card-inner">
               <div class="flip-card-front absolute inset-0 flex items-center justify-center rounded-2xl bg-white border-2 border-gray-200 shadow-lg p-8">
                 <p class="text-3xl font-medium text-gray-800">${esc(w.meaning)}</p>
               </div>
               <div class="flip-card-back absolute inset-0 flex flex-col items-center justify-center rounded-2xl bg-indigo-50 border-2 border-indigo-200 shadow-lg p-8">
-                ${renderFurigana(w.furigana, 'text-4xl')}
+                <span id="furigana-display" class="text-4xl" lang="ja">${esc(w.japanese)}</span>
                 <p class="text-lg text-gray-500 mt-4">${esc(w.meaning)}</p>
               </div>
             </div>
@@ -597,12 +599,39 @@
           document.getElementById('card').onclick = doFlip;
           document.getElementById('btn-flip').onclick = doFlip;
         } else {
+          document.getElementById('card-inner').classList.add('flipped');
           document.getElementById('btn-known').onclick = () => answer(true);
           document.getElementById('btn-unknown').onclick = () => answer(false);
         }
       }
 
-      function doFlip() { flipped = true; renderCard(); }
+      async function doFlip() {
+        flipped = true;
+        const inner = document.getElementById('card-inner');
+        inner.classList.add('flipped');
+        // 후리가나 변환 시도
+        const w = deck[idx];
+        const display = document.getElementById('furigana-display');
+        try {
+          let pairs = w.furigana && w.furigana.length > 0 ? w.furigana : null;
+          if (!pairs) {
+            const result = await convertFurigana(w.japanese);
+            pairs = result.pairs;
+            // DB에도 업데이트
+            w.furigana = pairs;
+            store.update(w.id, { furigana: pairs, reading: result.reading });
+          }
+          if (pairs && pairs.length > 0) {
+            display.innerHTML = renderFurigana(pairs, 'text-4xl');
+          }
+        } catch(e) { console.error('furigana conversion failed', e); }
+        // 버튼 전환
+        document.getElementById('controls').innerHTML =
+          `<button id="btn-unknown" class="inline-flex items-center justify-center rounded-lg font-medium px-6 py-3 text-base bg-red-600 text-white hover:bg-red-700 shadow-sm mr-4">모름 ✗ (←)</button>
+           <button id="btn-known" class="inline-flex items-center justify-center rounded-lg font-medium px-6 py-3 text-base bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm">알아! ✓ (→)</button>`;
+        document.getElementById('btn-known').onclick = () => answer(true);
+        document.getElementById('btn-unknown').onclick = () => answer(false);
+      }
 
       async function answer(known) {
         const w = deck[idx];
